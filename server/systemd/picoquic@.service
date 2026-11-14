@@ -1,0 +1,23 @@
+# One picoquic HTTP/3 file server per congestion controller; the instance name
+# (%i) is the label in server.conf. A separate unit per controller gives each
+# sender its own process and cgroup, so CPU time is accounted per controller and
+# a fault in one instance cannot perturb the others.
+
+[Unit]
+Description=picoquic HTTP/3 file server, congestion control %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=@SERVICE_USER@
+ExecStart=@CODE_DIR@/bin/serve.sh %i
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=65536
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=@STATE_DIR@ @LOG_DIR@
+
+[Install]
+WantedBy=multi-user.target
