@@ -27,7 +27,7 @@ def _run(args: argparse.Namespace) -> int:
     try:
         plan = campaign.prepare()
     except CurlError as error:
-        print(f"cannot fetch the server manifest over HTTP/3: {error}", file=sys.stderr)
+        print(f"server unreachable for at least one stack or port: {error}", file=sys.stderr)
         return 1
     print(f"results: {plan.out_dir}  seed: {plan.seed}", flush=True)
     try:
@@ -35,7 +35,7 @@ def _run(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print(f"\ninterrupted; completed transfers are kept in {plan.out_dir}", file=sys.stderr)
         return 130
-    _report(plan.out_dir, server_cpu=None)
+    _report(plan.out_dir, server_logs=None)
     return 0
 
 
@@ -50,12 +50,12 @@ def _dish(args: argparse.Namespace) -> int:
 
 
 def _summarize(args: argparse.Namespace) -> int:
-    _report(args.results, args.server_cpu)
+    _report(args.results, args.server_logs)
     return 0
 
 
-def _report(results: Path, server_cpu: Optional[Path]) -> None:
-    cells = summarize.summarize(results, server_cpu)
+def _report(results: Path, server_logs: Optional[Path]) -> None:
+    cells = summarize.summarize(results, server_logs)
     summarize.write(cells, results / "summary.csv")
     print(summarize.render(cells))
     print(f"\nwritten: {results / 'summary.csv'}")
@@ -77,7 +77,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     report = commands.add_parser("summarize", help="summarise a results directory")
     report.add_argument("results", type=Path)
-    report.add_argument("--server-cpu", type=Path, help="server logs/cpu.csv fetched from the server")
+    report.add_argument(
+        "--server-logs", type=Path, help="server logs/ directory fetched from the server (cpu.csv, tcp_cc.csv)"
+    )
     report.set_defaults(handler=_summarize)
 
     args = parser.parse_args(argv)

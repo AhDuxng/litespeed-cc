@@ -1,0 +1,32 @@
+# One OpenLiteSpeed instance per congestion control algorithm; the instance name
+# (%i) is the label in server.conf. The container shares the host network
+# namespace: no NAT or userland proxy sits on the data path, and its TCP sockets
+# take their congestion control from the host default that tcp-cc.timer switches,
+# which a private container namespace would not follow. A separate container per
+# algorithm gives each sender its own processes and cgroup, so CPU time is
+# accounted per algorithm and a fault in one instance cannot perturb the other.
+
+[Unit]
+Description=OpenLiteSpeed file server, congestion control %i
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=@SERVICE_USER@
+ExecStartPre=-/usr/bin/docker rm --force ols-%i
+ExecStart=/usr/bin/docker run --rm --init --name ols-%i --network host \
+    --ulimit nofile=65536:65536 \
+    --volume @OLS_STATE_DIR@/%i/httpd_config.conf:/usr/local/lsws/conf/httpd_config.conf:ro \
+    --volume @CODE_DIR@/ols/vhconf.conf:/usr/local/lsws/conf/vhosts/bench/vhconf.conf:ro \
+    --volume @TLS_DIR@:/etc/starlink-cc/tls:ro \
+    --volume @WWW_DIR@:/var/www/bench:ro \
+    --volume @OLS_LOG_DIR@/%i:/usr/local/lsws/logs \
+    @OLS_IMAGE@
+ExecStop=/usr/bin/docker stop --time 10 ols-%i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

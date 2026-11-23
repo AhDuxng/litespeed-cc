@@ -1,17 +1,19 @@
-"""HTTP/3 transfer probe built on curl --write-out.
+"""Transfer probe built on curl --write-out.
 
-Every transfer is a new curl process and therefore a new QUIC connection with a
-full 1-RTT handshake (no session ticket, no 0-RTT): each sample includes
-connection establishment, and the sender's controller always starts from its
-initial window, the regime that dominates short web transfers. --http3-only
-forbids a silent fallback to TCP, and the body is discarded to /dev/null so that
-storage bandwidth is never on the measured path.
+Every transfer is a new curl process and therefore a new connection with a full
+handshake (TCP + TLS, or QUIC with TLS 1.3 inside), so each sample includes
+connection establishment and the sender's congestion controller always starts
+from its initial window, the regime that dominates web downloads. The protocol
+options of the stack under test (stacks.py) are appended to a common base, and
+the body is discarded to /dev/null so that storage bandwidth is never on the
+measured path.
 
 Write-out variables kept (times in seconds from the start of the transfer):
-  time_connect, time_appconnect  QUIC and embedded TLS 1.3 handshake milestones
-  time_starttransfer             first response byte (TTFB)
-  time_total                     download time
-  speed_download                 size_download / time_total, in bytes per second
+  time_connect        TCP handshake complete (for QUIC, the QUIC handshake)
+  time_appconnect     TLS or QUIC handshake complete: the handshake time
+  time_starttransfer  first response byte (TTFB)
+  time_total          download time
+  speed_download      size_download / time_total, in bytes per second
   size_download, http_version, response_code, errormsg  validity of the sample
 
 The CPU time of the curl process is read from wait4(2) rusage, which is exact
@@ -44,7 +46,7 @@ WRITE_OUT_FIELDS = (
     "num_connects",
     "errormsg",
 )
-TRACE_MARKERS = ("SSL connection using", "Established connection", "using HTTP/3")
+TRACE_MARKERS = ("Connected to", "Established connection", "SSL connection using", "ALPN:", "using HTTP/")
 
 
 @dataclass(frozen=True)
@@ -67,10 +69,9 @@ class CurlError(RuntimeError):
 
 
 class Curl:
-    def __init__(self, binary: Path, tls13_ciphers: str, connect_timeout_s: float, max_time_s: float) -> None:
+    def __init__(self, binary: Path, connect_timeout_s: float, max_time_s: float) -> None:
         self._base = [
             str(binary),
-            "--http3-only",
             "--insecure",
             "--silent",
             "--connect-timeout",
@@ -78,11 +79,9 @@ class Curl:
             "--max-time",
             f"{max_time_s:g}",
         ]
-        if tls13_ciphers:
-            self._base += ["--tls13-ciphers", tls13_ciphers]
 
-    def download(self, url: str, on_spawn: Callable[[int], None]) -> Transfer:
-        argv = [*self._base, "--output", os.devnull, "--write-out", "%{json}", url]
+    def download(self, url: str, protocol: Sequence[str], on_spawn: Callable[[int], None]) -> Transfer:
+        argv = [*self._base, *protocol, "--output", os.devnull, "--write-out", "%{json}", url]
         read_fd, write_fd = os.pipe()
         with os.fdopen(read_fd, "rb") as pipe:
             try:
@@ -111,11 +110,11 @@ class Curl:
             cpu_sys_s=usage.ru_stime,
         )
 
-    def fetch(self, url: str) -> bytes:
-        return self._run(["--show-error", "--fail", url]).stdout
+    def fetch(self, url: str, protocol: Sequence[str]) -> bytes:
+        return self._run([*protocol, "--show-error", "--fail", url]).stdout
 
-    def trace(self, url: str) -> list[str]:
-        stderr = self._run(["--verbose", "--fail", "--output", os.devnull, url]).stderr
+    def trace(self, url: str, protocol: Sequence[str]) -> list[str]:
+        stderr = self._run([*protocol, "--verbose", "--fail", "--output", os.devnull, url]).stderr
         lines = stderr.decode(errors="replace").splitlines()
         return [line for line in lines if line.startswith("*") and any(m in line for m in TRACE_MARKERS)]
 

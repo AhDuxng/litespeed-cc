@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Client provisioning on the Raspberry Pi: a virtual environment with the gRPC
 # reflection client used for the Starlink dish, and a check that the configured
-# curl negotiates HTTP/3 through ngtcp2, the property every measurement relies on.
+# curl speaks HTTP/2 (nghttp2) and HTTP/3 through ngtcp2, the properties every
+# measurement relies on.
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
@@ -12,8 +13,9 @@ python3 -m venv .venv
 .venv/bin/pip install --quiet -r requirements.txt
 
 features="$("$CURL_BIN" --version)"
-grep -q 'HTTP3' <<<"$features" || { echo "error: $CURL_BIN lacks HTTP/3" >&2; exit 1; }
-grep -q 'ngtcp2' <<<"$features" || { echo "error: $CURL_BIN is not built on ngtcp2" >&2; exit 1; }
+for feature in HTTP2 HTTP3 ngtcp2; do
+    grep -q "$feature" <<<"$features" || { echo "error: $CURL_BIN lacks $feature" >&2; exit 1; }
+done
 
 printf '%s\n' "$features" | head -1
 .venv/bin/python -c 'import grpc, google.protobuf; print("grpcio", grpc.__version__, "protobuf", google.protobuf.__version__)'

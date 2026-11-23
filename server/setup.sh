@@ -1,54 +1,91 @@
 #!/usr/bin/env bash
-# Idempotent provisioning of the picoquic congestion-control server.
+# Idempotent provisioning of the OpenLiteSpeed congestion-control server.
 #
 # Usage: setup.sh [step ...]          (no argument: every step, in order)
-#   packages  toolchain and OpenSSL headers required by picoquic/picotls
-#   picoquic  build picoquicdemo at the pinned commit; skipped when already built
+#   prereq    docker daemon reachable, SERVICE_USER in the docker group, python3
+#   kernel    every algorithm label loaded as a kernel TCP congestion control and
+#             loaded again at boot; tcp_no_metrics_save=1, so a TCP connection does
+#             not inherit ssthresh and RTT cached from the previous connection to the
+#             same address, which every transfer of the campaign shares
+#   image     pull the pinned OpenLiteSpeed image when absent
 #   tls       self-signed P-256 certificate (the client runs curl --insecure)
 #   payloads  incompressible random files; regenerated only when the size differs
-#   manifest  www/manifest.json, the single source of truth read by the client:
-#             controller-to-port map, payload sizes and SHA-256, picoquic commit
-#   services  render and (re)start picoquic@<label> and picoquic-cpu
-#   verify    every instance is active and bound to its UDP port
+#   config    render one OpenLiteSpeed configuration per instance
+#   manifest  www/manifest.json, the single source of truth read by the client
+#   services  render and (re)start ols@<label>, ols-cpu and tcp-cc.timer
+#   verify    containers active, tcp and udp ports bound, HTTP/2 over TLS 1.2 and
+#             1.3 answered locally, kernel algorithm equal to the scheduled one
 set -euo pipefail
 
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib/common.sh"
 
-readonly ALL_STEPS=(packages picoquic tls payloads manifest services verify)
-readonly PACKAGES=(build-essential cmake git pkg-config libssl-dev python3)
+readonly ALL_STEPS=(prereq kernel image tls payloads config manifest services verify)
 readonly SYSTEMD_DIR=/etc/systemd/system
+readonly UNIT_TEMPLATES=(ols@.service ols-cpu.service tcp-cc.service tcp-cc.timer)
+readonly MODULES_FILE=/etc/modules-load.d/starlink-cc.conf
+readonly SYSCTL_FILE=/etc/sysctl.d/90-starlink-cc.conf
 
-step_packages() {
-    local pkg missing=()
-    for pkg in "${PACKAGES[@]}"; do
-        dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || missing+=("$pkg")
+render() {
+    local template="$1" pair expressions=()
+    shift
+    for pair in "$@"; do
+        expressions+=(-e "s|@${pair%%=*}@|${pair#*=}|g")
     done
-    if ((${#missing[@]} == 0)); then
-        log "packages already installed"
-        return
-    fi
-    log "installing ${missing[*]}"
-    sudo apt-get update -q
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q "${missing[@]}"
+    sed "${expressions[@]}" "$template"
 }
 
-step_picoquic() {
-    local src="$BUILD_DIR/picoquic" stamp="$BUILD_DIR/picoquicdemo.commit"
-    if [[ -x $PICOQUIC_BIN && -f $stamp && $(<"$stamp") == "$PICOQUIC_COMMIT" ]]; then
-        log "picoquicdemo already built at ${PICOQUIC_COMMIT:0:12}"
+on_calendar() {
+    local spec offset algorithm lines=() joined
+    ((TCP_CC_PERIOD_S % 60 == 0 && 3600 % TCP_CC_PERIOD_S == 0)) ||
+        die "TCP_CC_PERIOD_S must be a whole number of minutes that divides one hour"
+    for spec in "${TCP_CC_SWITCHES[@]}"; do
+        IFS=: read -r offset algorithm <<<"$spec"
+        ((offset % 60 == 0 && offset < TCP_CC_PERIOD_S)) || die "switch '$spec' must sit on a whole minute inside the period"
+        instance_field "$algorithm" quic_cc >/dev/null || die "switch '$spec' names no instance"
+        lines+=("$(printf 'OnCalendar=*-*-* *:%02d/%d:00' $((offset / 60)) $((TCP_CC_PERIOD_S / 60)))")
+    done
+    joined="$(printf '%s\\n' "${lines[@]}")"
+    printf '%s' "${joined%\\n}"
+}
+
+tcp_cc_args() {
+    local spec args=(--period "$TCP_CC_PERIOD_S")
+    for spec in "${TCP_CC_SWITCHES[@]}"; do
+        args+=(--switch "$spec")
+    done
+    printf '%s' "${args[*]}"
+}
+
+step_prereq() {
+    command -v python3 >/dev/null || die "python3 is required"
+    command -v docker >/dev/null || die "docker is required"
+    id -nG "$SERVICE_USER" | grep -qw docker || die "$SERVICE_USER must belong to the docker group"
+    docker info >/dev/null 2>&1 || die "docker daemon unreachable for $(id -un)"
+    log "docker $(docker version --format '{{.Server.Version}}'), $(python3 --version)"
+}
+
+step_kernel() {
+    local label module modules=()
+    for label in $(instance_labels); do
+        module="tcp_$label"
+        grep -qw "$label" /proc/sys/net/ipv4/tcp_available_congestion_control || sudo modprobe "$module"
+        grep -qw "$label" /proc/sys/net/ipv4/tcp_available_congestion_control || die "kernel lacks $module"
+        if [[ $(modinfo -F filename "$module" 2>/dev/null) == /* ]]; then
+            modules+=("$module")
+        fi
+    done
+    printf '%s\n' "${modules[@]}" | sudo tee "$MODULES_FILE" >/dev/null
+    printf 'net.ipv4.tcp_no_metrics_save = 1\n' | sudo tee "$SYSCTL_FILE" >/dev/null
+    sudo sysctl --quiet --load "$SYSCTL_FILE"
+    log "tcp algorithms: $(</proc/sys/net/ipv4/tcp_available_congestion_control); boot modules: ${modules[*]:-none}"
+}
+
+step_image() {
+    if docker image inspect "$OLS_IMAGE" >/dev/null 2>&1; then
+        log "$OLS_IMAGE already present"
         return
     fi
-    mkdir -p "$BUILD_DIR"
-    [[ -d $src/.git ]] || git clone --quiet "$PICOQUIC_REPO" "$src"
-    git -C "$src" fetch --quiet origin
-    git -C "$src" checkout --quiet --force "$PICOQUIC_COMMIT"
-    cmake -S "$src" -B "$src/build" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DPICOQUIC_FETCH_PTLS=ON \
-        -Dpicoquic_BUILD_TESTS=OFF
-    cmake --build "$src/build" --parallel "$(nproc)" --target picoquicdemo
-    install -m 0755 "$src/build/picoquicdemo" "$PICOQUIC_BIN"
-    printf '%s\n' "$PICOQUIC_COMMIT" >"$stamp"
+    docker pull --quiet "$OLS_IMAGE"
 }
 
 step_tls() {
@@ -81,84 +118,124 @@ step_payloads() {
     done
 }
 
-json_join() {
-    local IFS=,
-    printf '%s' "$*"
+step_config() {
+    local label dir
+    for label in $(instance_labels); do
+        dir="$OLS_STATE_DIR/$label"
+        mkdir -p "$dir" "$OLS_LOG_DIR/$label"
+        render "$CODE_DIR/ols/httpd_config.conf.in" \
+            "LABEL=$label" \
+            "TCP_PORT=$(instance_field "$label" tcp_port)" \
+            "UDP_PORT=$(instance_field "$label" udp_port)" \
+            "QUIC_CC=$(instance_field "$label" quic_cc)" >"$dir/httpd_config.conf"
+        log "rendered $dir/httpd_config.conf"
+    done
 }
 
 step_manifest() {
-    local spec name algorithm port file instances=() payloads=()
+    local spec digest version args=()
     for spec in "${INSTANCES[@]}"; do
-        IFS=: read -r name algorithm port <<<"$spec"
-        instances+=("$(printf '{"label":"%s","algorithm":"%s","port":%d}' "$name" "$algorithm" "$port")")
+        args+=(--instance "$spec")
+    done
+    for spec in "${TCP_CC_SWITCHES[@]}"; do
+        args+=(--switch "$spec")
     done
     for spec in "${PAYLOADS[@]}"; do
-        file="$WWW_DIR/${spec%%:*}"
-        [[ -f $file ]] || die "missing payload $file (run the payloads step)"
-        payloads+=("$(printf '{"name":"%s","bytes":%d,"sha256":"%s"}' \
-            "${spec%%:*}" "$(stat -c %s "$file")" "$(sha256sum "$file" | cut -d' ' -f1)")")
+        [[ -f $WWW_DIR/${spec%%:*} ]] || die "missing payload $WWW_DIR/${spec%%:*} (run the payloads step)"
+        args+=(--payload "${spec%%:*}")
     done
-    printf '{"picoquic_commit":"%s","socket_buffer_bytes":%d,"qlog":%s,"instances":[%s],"payloads":[%s]}\n' \
-        "$PICOQUIC_COMMIT" "$SOCKET_BUFFER_BYTES" "$([[ $QLOG == 1 ]] && echo true || echo false)" \
-        "$(json_join "${instances[@]}")" "$(json_join "${payloads[@]}")" >"$WWW_DIR/manifest.json"
-    log "wrote $WWW_DIR/manifest.json"
+    digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$OLS_IMAGE" 2>/dev/null || true)"
+    version="$(timeout 30 docker run --rm --network none --entrypoint /usr/local/lsws/bin/openlitespeed "$OLS_IMAGE" -v 2>&1 || true)"
+    python3 "$CODE_DIR/bin/make_manifest.py" \
+        --www "$WWW_DIR" \
+        --tls-name "$TLS_NAME" \
+        --image "$OLS_IMAGE" \
+        --image-digest "$digest" \
+        --server-version "$version" \
+        --period "$TCP_CC_PERIOD_S" \
+        --window-delay "$WINDOW_DELAY_S" \
+        "${args[@]}"
 }
 
-render_unit() {
-    local template="$1" monitor_units="$2"
-    sed -e "s|@SERVICE_USER@|$SERVICE_USER|g" \
-        -e "s|@CODE_DIR@|$CODE_DIR|g" \
-        -e "s|@STATE_DIR@|$STATE_DIR|g" \
-        -e "s|@LOG_DIR@|$LOG_DIR|g" \
-        -e "s|@MONITOR_UNITS@|$monitor_units|g" \
-        "$template" | sudo tee "$SYSTEMD_DIR/$(basename "$template")" >/dev/null
-}
-
-service_units() {
+server_units() {
     local label
-    while read -r label; do
-        printf 'picoquic@%s.service\n' "$label"
-    done < <(instance_labels)
-    printf 'picoquic-cpu.service\n'
+    for label in $(instance_labels); do
+        printf 'ols@%s.service\n' "$label"
+    done
+    printf 'ols-cpu.service\n'
 }
 
 step_services() {
-    local label units monitor_units=()
-    [[ -x $PICOQUIC_BIN ]] || die "picoquicdemo not built (run the picoquic step)"
-    mkdir -p "$STATE_DIR" "$LOG_DIR"
-    while read -r label; do
-        monitor_units+=("$label=picoquic@$label.service")
-    done < <(instance_labels)
-    render_unit "$CODE_DIR/systemd/picoquic@.service" ""
-    render_unit "$CODE_DIR/systemd/picoquic-cpu.service" "${monitor_units[*]}"
-    mapfile -t units < <(service_units)
+    local label name units containers=() variables
+    for label in $(instance_labels); do
+        [[ -f $OLS_STATE_DIR/$label/httpd_config.conf ]] || die "no configuration for $label (run the config step)"
+        containers+=("$label=ols-$label")
+    done
+    variables=(
+        "SERVICE_USER=$SERVICE_USER"
+        "CODE_DIR=$CODE_DIR"
+        "LOG_DIR=$LOG_DIR"
+        "OLS_STATE_DIR=$OLS_STATE_DIR"
+        "OLS_LOG_DIR=$OLS_LOG_DIR"
+        "TLS_DIR=$TLS_DIR"
+        "WWW_DIR=$WWW_DIR"
+        "OLS_IMAGE=$OLS_IMAGE"
+        "MONITOR_CONTAINERS=${containers[*]}"
+        "TCP_CC_ARGS=$(tcp_cc_args)"
+        "ON_CALENDAR=$(on_calendar)"
+    )
+    mkdir -p "$LOG_DIR"
+    for name in "${UNIT_TEMPLATES[@]}"; do
+        render "$CODE_DIR/systemd/$name" "${variables[@]}" | sudo tee "$SYSTEMD_DIR/$name" >/dev/null
+    done
+    mapfile -t units < <(server_units)
     sudo systemctl daemon-reload
-    sudo systemctl enable --quiet "${units[@]}"
-    sudo systemctl restart "${units[@]}"
-    log "restarted ${units[*]}"
+    sudo systemctl start tcp-cc.service
+    sudo systemctl enable --quiet tcp-cc.timer "${units[@]}"
+    sudo systemctl restart tcp-cc.timer "${units[@]}"
+    log "restarted tcp-cc.timer ${units[*]}"
+}
+
+check() {
+    local description="$1"
+    shift
+    if "$@"; then
+        log "$description"
+    else
+        printf 'FAIL: %s\n' "$description" >&2
+        return 1
+    fi
+}
+
+answers_h2() {
+    local port="$1" version="$2"
+    [[ $(curl -sk --http2 --tlsv"$version" --tls-max "$version" --max-time 5 -o /dev/null \
+        -w '%{http_code} %{http_version}' "https://127.0.0.1:$port/manifest.json") == "200 2" ]]
+}
+
+scheduled_cc_in_force() {
+    local scheduled
+    scheduled="$(tail -n 1 "$LOG_DIR/tcp_cc.csv" | cut -d, -f3)"
+    [[ -n $scheduled && $(</proc/sys/net/ipv4/tcp_congestion_control) == "$scheduled" ]]
 }
 
 step_verify() {
-    local unit label port failed=0
-    sleep 2
+    local unit label tcp_port udp_port version failed=0
+    sleep 3
     while read -r unit; do
-        if systemctl is-active --quiet "$unit"; then
-            log "$unit active"
-        else
-            printf 'FAIL: %s is not active\n' "$unit" >&2
-            failed=1
-        fi
-    done < <(service_units)
-    while read -r label; do
-        port="$(instance_field "$label" port)"
-        if ss -Hlun "sport = :$port" | grep -q .; then
-            log "$label listening on udp/$port"
-        else
-            printf 'FAIL: nothing bound to udp/%s (%s)\n' "$port" "$label" >&2
-            failed=1
-        fi
-    done < <(instance_labels)
-    ((failed == 0)) || die "verification failed; inspect: journalctl -u 'picoquic*'"
+        check "$unit active" systemctl is-active --quiet "$unit" || failed=1
+    done < <(server_units; printf 'tcp-cc.timer\n')
+    for label in $(instance_labels); do
+        tcp_port="$(instance_field "$label" tcp_port)"
+        udp_port="$(instance_field "$label" udp_port)"
+        check "$label bound to tcp/$tcp_port" bash -c "ss -Hltn 'sport = :$tcp_port' | grep -q ." || failed=1
+        check "$label bound to udp/$udp_port" bash -c "ss -Hlun 'sport = :$udp_port' | grep -q ." || failed=1
+        for version in 1.2 1.3; do
+            check "$label answers HTTP/2 over TLS $version" answers_h2 "$tcp_port" "$version" || failed=1
+        done
+    done
+    check "kernel TCP algorithm $(</proc/sys/net/ipv4/tcp_congestion_control) matches the schedule" scheduled_cc_in_force || failed=1
+    ((failed == 0)) || die "verification failed; inspect: journalctl -u 'ols@*' -u tcp-cc; docker logs ols-<label>"
 }
 
 main() {

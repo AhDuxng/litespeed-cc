@@ -4,11 +4,13 @@ A Raspberry Pi lowers its ARM clock when the supply voltage sags or the SoC
 reaches its thermal limit. The firmware reports this through
 `vcgencmd get_throttled`: bits 0-3 flag under-voltage, ARM frequency capping,
 throttling and the soft temperature limit as active now, bits 16-19 the same
-conditions as having occurred since boot. A throttled receiver processes QUIC
-packets more slowly and can masquerade as a weaker congestion controller, so the
-flags and the SoC temperature are recorded around every transfer. Host facts (kernel, curl build, Python packages, egress
-route, clock synchronisation) are stored with each dataset so that results can
-be traced to the exact software and network path that produced them.
+conditions as having occurred since boot. A throttled receiver processes
+packets and decrypts records more slowly and can masquerade as a weaker
+congestion controller or a costlier stack, so the flags and the SoC temperature
+are recorded around every transfer. Host facts (kernel, curl build, Python
+packages, TCP receive-side sysctls, egress route, clock synchronisation) are
+stored with each dataset so that results can be traced to the exact software and
+network path that produced them.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ DEVICE_MODEL = Path("/proc/device-tree/model")
 OS_RELEASE = Path("/etc/os-release")
 THROTTLED_NOW_MASK = 0xF
 PYTHON_PACKAGES = ("grpcio", "grpcio-reflection", "protobuf")
+SYSCTLS = ("net.ipv4.tcp_rmem", "net.core.rmem_max", "net.ipv4.tcp_ecn", "net.ipv4.tcp_congestion_control")
 
 
 def command_output(argv: Sequence[str]) -> str:
@@ -77,6 +80,7 @@ def describe(server_host: str, curl_bin: Path) -> dict[str, Any]:
         "python": platform.python_version(),
         "python_packages": {name: _package_version(name) for name in PYTHON_PACKAGES},
         "curl_version": command_output([str(curl_bin), "--version"]).splitlines(),
+        "sysctl": {name: read_text(Path("/proc/sys", *name.split("."))) for name in SYSCTLS},
         "egress_route": command_output(["ip", "route", "get", server_host]),
         "ntp_synchronized": command_output(["timedatectl", "show", "--property=NTPSynchronized", "--value"]),
         "throttled": throttled_flags(),

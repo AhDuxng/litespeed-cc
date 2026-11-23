@@ -1,0 +1,16 @@
+# Fires at every switch of the TCP congestion control grid (one OnCalendar line per
+# switch, rendered from server.conf) and once on activation, so the scheduled
+# algorithm is restored after a reboot. AccuracySec=1s overrides the 1 min default
+# coalescing, so a switch lands within a second of its minute.
+
+[Unit]
+Description=Switch the kernel TCP congestion control on the experiment grid
+
+[Timer]
+@ON_CALENDAR@
+OnActiveSec=1s
+AccuracySec=1s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

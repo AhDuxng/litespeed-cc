@@ -20,7 +20,9 @@ class Config:
     server_host: str
     manifest_port: int
     curl_bin: Path
+    tls12_ciphers: str
     tls13_ciphers: str
+    tls_groups: str
     rounds: int
     gap_s: float
     connect_timeout_s: float
@@ -47,7 +49,9 @@ _SCHEMA: Mapping[str, tuple[str, Callable[[str], Any]]] = {
     "SERVER_HOST": ("server_host", str),
     "MANIFEST_PORT": ("manifest_port", int),
     "CURL_BIN": ("curl_bin", _path),
+    "TLS12_CIPHERS": ("tls12_ciphers", str),
     "TLS13_CIPHERS": ("tls13_ciphers", str),
+    "TLS_GROUPS": ("tls_groups", str),
     "ROUNDS": ("rounds", int),
     "GAP_SECONDS": ("gap_s", float),
     "CONNECT_TIMEOUT_SECONDS": ("connect_timeout_s", float),

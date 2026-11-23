@@ -1,7 +1,9 @@
 # Deployment from the workstation. Server code is synchronised to
 # $(SERVER_ROOT)/server and client scripts to ~/$(CLIENT_ROOT) on the Raspberry Pi.
-# Generated state (picoquic build, payloads, certificates, logs, results, venv) lives
-# outside the synchronised trees or is excluded, so a deploy never overwrites data.
+# Generated state (payloads, certificate, rendered OpenLiteSpeed configurations, logs,
+# results, venv) lives outside the synchronised trees or is excluded, so a deploy never
+# overwrites data. `make fetch` brings back the Pi's results and the server's logs
+# (cpu.csv, tcp_cc.csv, OpenLiteSpeed access and error logs).
 
 SERVER      ?= ubuntu@47.129.174.173
 CLIENT      ?= trungnt@100.72.249.11
@@ -27,4 +29,4 @@ setup-client: deploy-client
 fetch:
 	mkdir -p results/client results/server
 	rsync -az $(CLIENT):$(CLIENT_ROOT)/results/ results/client/
-	rsync -az --exclude qlog $(SERVER):$(SERVER_ROOT)/logs/ results/server/
+	rsync -az $(SERVER):$(SERVER_ROOT)/logs/ results/server/

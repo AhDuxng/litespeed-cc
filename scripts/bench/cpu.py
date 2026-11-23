@@ -1,9 +1,10 @@
 """Client CPU load during transfers.
 
-On the Pi 4 receiver, QUIC packet protection and packet processing run in user
-space on a single core, so the receiver can saturate before the Starlink link
-does; differences between congestion controllers are interpretable only while
-it does not. Two complementary measurements are taken:
+On the Pi 4 receiver, record decryption runs in user space on a single core for
+every stack, and for HTTP/3 the whole QUIC transport does too, so the receiver
+can saturate before the Starlink link does; differences between stacks and
+congestion controllers are interpretable only while it does not. Two
+complementary measurements are taken:
 
   * per transfer, the exact CPU time of the curl process from wait4(2) rusage
     (curl.py), giving its mean utilisation over the transfer (100 % = one core);

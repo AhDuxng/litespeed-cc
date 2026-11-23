@@ -1,0 +1,19 @@
+# 1 Hz CPU accounting of every OpenLiteSpeed container from its cgroup v2 counters,
+# with host-wide busy, softirq and steal shares, written to logs/cpu.csv for joining
+# with client-side transfer intervals.
+
+[Unit]
+Description=CPU monitor for the OpenLiteSpeed congestion-control instances
+After=docker.service network-online.target
+
+[Service]
+Type=exec
+User=@SERVICE_USER@
+ExecStart=/usr/bin/python3 @CODE_DIR@/bin/cpu_monitor.py --interval 1 --output @LOG_DIR@/cpu.csv @MONITOR_CONTAINERS@
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

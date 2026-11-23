@@ -1,19 +1,20 @@
 # Shared environment of the server-side scripts.
 #
 # Code (server/, replaced on every deploy) is kept apart from generated state
-# (build/, www/, tls/, state/, logs/ beside it), so redeploying code never touches
-# the compiled binary, the payloads or the collected logs. Instance specifications
-# are parsed in one place so the systemd units, the launcher and the manifest
-# cannot disagree on which port carries which congestion controller.
+# (www/, tls/, state/, logs/ beside it), so redeploying code never touches the
+# payloads, the certificate, the rendered OpenLiteSpeed configurations or the
+# collected logs. Instance and schedule specifications are parsed in one place so
+# that the OpenLiteSpeed configurations, the systemd units and the manifest cannot
+# disagree on which port carries which congestion control algorithm.
 
 CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_DIR="$(dirname "$CODE_DIR")"
-BUILD_DIR="$ROOT_DIR/build"
 WWW_DIR="$ROOT_DIR/www"
 TLS_DIR="$ROOT_DIR/tls"
 STATE_DIR="$ROOT_DIR/state"
 LOG_DIR="$ROOT_DIR/logs"
-PICOQUIC_BIN="$BUILD_DIR/picoquicdemo"
+OLS_STATE_DIR="$STATE_DIR/ols"
+OLS_LOG_DIR="$LOG_DIR/ols"
 
 source "$CODE_DIR/server.conf"
 
@@ -34,13 +35,14 @@ instance_labels() {
 }
 
 instance_field() {
-    local label="$1" field="$2" spec name algorithm port
+    local label="$1" field="$2" spec name quic_cc tcp_port udp_port
     for spec in "${INSTANCES[@]}"; do
-        IFS=: read -r name algorithm port <<<"$spec"
+        IFS=: read -r name quic_cc tcp_port udp_port <<<"$spec"
         [[ $name == "$label" ]] || continue
         case $field in
-            algorithm) printf '%s\n' "$algorithm" ;;
-            port) printf '%s\n' "$port" ;;
+            quic_cc) printf '%s\n' "$quic_cc" ;;
+            tcp_port) printf '%s\n' "$tcp_port" ;;
+            udp_port) printf '%s\n' "$udp_port" ;;
             *) return 1 ;;
         esac
         return 0

@@ -1,0 +1,9 @@
+# Sets the kernel TCP congestion control required by the time grid of server.conf
+# and appends the change to logs/tcp_cc.csv; triggered by tcp-cc.timer.
+
+[Unit]
+Description=Apply the scheduled kernel TCP congestion control
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 @CODE_DIR@/bin/tcp_cc.py @TCP_CC_ARGS@ --log @LOG_DIR@/tcp_cc.csv
