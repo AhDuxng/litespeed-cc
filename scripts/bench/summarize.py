@@ -14,8 +14,10 @@ which kernel algorithm was in force at every instant: a TCP transfer is bound to
 the algorithm in force when the server accepted it, approximated by the client's
 started_at + time_connect, and a transfer whose algorithm differs from its
 window's is counted in tcp_cc_mismatch_runs and excluded from the statistics.
-cpu.csv gives the sender's CPU time per transfer by integrating its container's
-utilisation over the samples that cover the transfer, the idle gap between
+cpu.csv gives the sender's CPU time per transfer by integrating the utilisation
+of the container that served it (runs.csv server: the window's instance for
+HTTP/3, the instance hosting the single tcp listener for HTTP/2) over the samples
+that cover the transfer, the idle gap between
 transfers keeping neighbours out; server_steal_runs counts transfers during
 which the burstable EC2 host had vCPU time withheld by the hypervisor, the
 server-side analogue of Pi throttling.
@@ -170,7 +172,7 @@ def summarize(results_dir: Path, server_logs: Optional[Path] = None) -> list[dic
         spans = [(float(run["started_at"]), float(run["finished_at"])) for run in runs]
         widened = [(start - margin, end + margin) for start, end in spans]
         covering = [(start, end + server_interval) for start, end in spans]
-        server_pct = Series.from_rows(server_rows, f"{cc}_pct")
+        server_pct = Series.from_rows(server_rows, f"{rows[0].get('server') or cc}_pct")
         obstruction = _per_run(widened, obstructed, max)
         summary.append(
             {

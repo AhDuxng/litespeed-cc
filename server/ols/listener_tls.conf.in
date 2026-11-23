@@ -1,0 +1,22 @@
+# HTTP/2 over TLS listener of the instance named in TCP_LISTENER, appended by
+# setup.sh to that instance's rendered configuration. A TCP socket takes its
+# congestion control from the kernel default in force when it is accepted, not from
+# the instance, so one listener serves the TCP transfers of both algorithms and
+# tcp-cc.timer alone decides which algorithm each of them runs. QUIC is disabled on
+# it; TLS settings match the "quic" listener of httpd_config.conf.in.
+
+listener tls {
+  address                        *:@TCP_PORT@
+  secure                         1
+  keyFile                        /etc/starlink-cc/tls/key.pem
+  certFile                       /etc/starlink-cc/tls/cert.pem
+  sslProtocol                    24
+  ciphers                        ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384
+  enableECDHE                    1
+  renegProtection                1
+  sslSessionCache                0
+  sslSessionTickets              0
+  enableSpdy                     12
+  enableQuic                     0
+  map                            bench *
+}

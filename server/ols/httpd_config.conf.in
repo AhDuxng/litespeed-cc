@@ -1,20 +1,21 @@
 # OpenLiteSpeed server configuration of one congestion-control instance; setup.sh
-# fills in its label, ports and QUIC algorithm from server.conf. Instances differ only in
-# their ports and tuning.quicCongestionCtrl (1 = CUBIC, 2 = BBRv1 in lsquic);
+# fills in its label, udp port and QUIC algorithm from server.conf. Instances differ
+# only in their udp port and tuning.quicCongestionCtrl (1 = CUBIC, 2 = BBRv1 in lsquic);
 # certificate, payloads and every other setting are identical, so a difference
 # between instances is attributable to the algorithm alone.
 #
-# Two listeners with identical TLS settings split the transports: "tls" serves
-# HTTP/2 over TCP with QUIC disabled, "quic" serves HTTP/3 over UDP (OpenLiteSpeed
-# binds the TCP side of a QUIC listener too; no client uses it). Both accept TLS
-# 1.2 and TLS 1.3 (sslProtocol 8 + 16) and advertise h2 and h3 (enableSpdy 4 + 8);
-# the client pins the TLS version and HTTP version of each stack. The TLS 1.2
-# suites are ECDSA-authenticated to match the P-256 certificate. Session cache and
-# tickets are disabled so every connection performs a full handshake. Compression
-# is disabled: the payloads are random, and the transferred bytes must equal the
-# file size. A single worker keeps all work of an algorithm in one process, so its
-# CPU time is accounted in one place. WebAdmin is disabled; the whole configuration
-# lives in this repository.
+# The "quic" listener serves HTTP/3 over UDP (OpenLiteSpeed binds the TCP side of a
+# QUIC listener too; no client uses it). HTTP/2 over TCP is served by one instance
+# only, through the "tls" listener of listener_tls.conf.in that setup.sh appends to
+# the instance named in TCP_LISTENER, because the TCP algorithm is the kernel's.
+# Both listeners accept TLS 1.2 and TLS 1.3 (sslProtocol 8 + 16) and advertise h2
+# and h3 (enableSpdy 4 + 8); the client pins the TLS version and HTTP version of each
+# stack. The TLS 1.2 suites are ECDSA-authenticated to match the P-256 certificate.
+# Session cache and tickets are disabled so every connection performs a full
+# handshake. Compression is disabled: the payloads are random, and the transferred
+# bytes must equal the file size. A single worker keeps all work of an instance in
+# one process, so its CPU time is accounted in one place. WebAdmin is disabled; the
+# whole configuration lives in this repository.
 
 serverName                       starlink-cc-@LABEL@
 user                             nobody
@@ -85,22 +86,6 @@ virtualHost bench {
   enableScript                   0
   restrained                     1
   setUIDMode                     0
-}
-
-listener tls {
-  address                        *:@TCP_PORT@
-  secure                         1
-  keyFile                        /etc/starlink-cc/tls/key.pem
-  certFile                       /etc/starlink-cc/tls/cert.pem
-  sslProtocol                    24
-  ciphers                        ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384
-  enableECDHE                    1
-  renegProtection                1
-  sslSessionCache                0
-  sslSessionTickets              0
-  enableSpdy                     12
-  enableQuic                     0
-  map                            bench *
 }
 
 listener quic {

@@ -10,11 +10,12 @@
 #   image     pull the pinned OpenLiteSpeed image when absent
 #   tls       self-signed P-256 certificate (the client runs curl --insecure)
 #   payloads  incompressible random files; regenerated only when the size differs
-#   config    render one OpenLiteSpeed configuration per instance
+#   config    render one OpenLiteSpeed configuration per instance; the instance named
+#             in TCP_LISTENER also gets the single HTTP/2 over TLS listener
 #   manifest  www/manifest.json, the single source of truth read by the client
 #   services  render and (re)start ols@<label>, ols-cpu and tcp-cc.timer
-#   verify    containers active, tcp and udp ports bound, HTTP/2 over TLS 1.2 and
-#             1.3 answered locally, kernel algorithm equal to the scheduled one
+#   verify    containers active, the tcp port and every udp port bound, HTTP/2 over
+#             TLS 1.2 and 1.3 answered locally, kernel algorithm equal to the scheduled one
 set -euo pipefail
 
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/lib/common.sh"
@@ -120,14 +121,20 @@ step_payloads() {
 
 step_config() {
     local label dir
+    instance_field "$(tcp_instance)" quic_cc >/dev/null || die "TCP_LISTENER '$TCP_LISTENER' names no instance"
     for label in $(instance_labels); do
         dir="$OLS_STATE_DIR/$label"
         mkdir -p "$dir" "$OLS_LOG_DIR/$label"
-        render "$CODE_DIR/ols/httpd_config.conf.in" \
-            "LABEL=$label" \
-            "TCP_PORT=$(instance_field "$label" tcp_port)" \
-            "UDP_PORT=$(instance_field "$label" udp_port)" \
-            "QUIC_CC=$(instance_field "$label" quic_cc)" >"$dir/httpd_config.conf"
+        {
+            render "$CODE_DIR/ols/httpd_config.conf.in" \
+                "LABEL=$label" \
+                "UDP_PORT=$(instance_field "$label" udp_port)" \
+                "QUIC_CC=$(instance_field "$label" quic_cc)"
+            if [[ $label == "$(tcp_instance)" ]]; then
+                printf '\n'
+                render "$CODE_DIR/ols/listener_tls.conf.in" "TCP_PORT=$(tcp_port)"
+            fi
+        } >"$dir/httpd_config.conf"
         log "rendered $dir/httpd_config.conf"
     done
 }
@@ -154,6 +161,7 @@ step_manifest() {
         --server-version "$version" \
         --period "$TCP_CC_PERIOD_S" \
         --window-delay "$WINDOW_DELAY_S" \
+        --tcp "$TCP_LISTENER" \
         "${args[@]}"
 }
 
@@ -220,19 +228,18 @@ scheduled_cc_in_force() {
 }
 
 step_verify() {
-    local unit label tcp_port udp_port version failed=0
+    local unit label udp_port version failed=0
     sleep 3
     while read -r unit; do
         check "$unit active" systemctl is-active --quiet "$unit" || failed=1
     done < <(server_units; printf 'tcp-cc.timer\n')
     for label in $(instance_labels); do
-        tcp_port="$(instance_field "$label" tcp_port)"
         udp_port="$(instance_field "$label" udp_port)"
-        check "$label bound to tcp/$tcp_port" bash -c "ss -Hltn 'sport = :$tcp_port' | grep -q ." || failed=1
         check "$label bound to udp/$udp_port" bash -c "ss -Hlun 'sport = :$udp_port' | grep -q ." || failed=1
-        for version in 1.2 1.3; do
-            check "$label answers HTTP/2 over TLS $version" answers_h2 "$tcp_port" "$version" || failed=1
-        done
+    done
+    check "$(tcp_instance) bound to tcp/$(tcp_port)" bash -c "ss -Hltn 'sport = :$(tcp_port)' | grep -q ." || failed=1
+    for version in 1.2 1.3; do
+        check "tcp/$(tcp_port) answers HTTP/2 over TLS $version" answers_h2 "$(tcp_port)" "$version" || failed=1
     done
     check "kernel TCP algorithm $(</proc/sys/net/ipv4/tcp_congestion_control) matches the schedule" scheduled_cc_in_force || failed=1
     ((failed == 0)) || die "verification failed; inspect: journalctl -u 'ols@*' -u tcp-cc; docker logs ols-<label>"

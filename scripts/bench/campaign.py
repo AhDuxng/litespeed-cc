@@ -10,9 +10,12 @@ Design
             server's kernel default, switched on a grid of Unix time
             (schedule.py). Each algorithm therefore owns recurring windows, and
             in each window the client runs one batch: every stack x payload
-            once, in random order (seed recorded), TCP and QUIC alike against
-            the instance of that algorithm (its tcp port for HTTP/2, its udp
-            port for HTTP/3). A round is one window per algorithm.
+            once, in random order (seed recorded). HTTP/3 goes to the udp port
+            of the window's instance; HTTP/2 goes to the single tcp listener,
+            whose accepted sockets take the kernel algorithm of the window. The
+            instance that served a transfer is recorded as its server, the
+            container whose CPU it consumed. A round is one window per
+            algorithm.
   Blocking  The transfers of a batch fall within about a minute and meet nearly
             the same Starlink conditions, which drift with the 15 s satellite
             reallocation cycle, beam load, weather and obstruction. Stacks are
@@ -70,6 +73,7 @@ RUN_FIELDS = (
     "stack",
     "transport",
     "cc",
+    "server",
     "port",
     "payload",
     "payload_bytes",
@@ -106,6 +110,7 @@ class Trial:
     slot: int
     stack: Stack
     instance: Instance
+    server: str
     endpoint: Endpoint
     payload: Payload
 
@@ -123,6 +128,7 @@ class Trial:
             "stack": self.stack.name,
             "transport": self.stack.transport,
             "cc": self.instance.label,
+            "server": self.server,
             "port": self.endpoint.port,
             "payload": self.payload.name,
             "payload_bytes": self.payload.size_bytes,
@@ -142,11 +148,12 @@ class Campaign:
         manifest = Manifest.parse(self._curl.fetch(origin.url(MANIFEST_PATH), fetch_stack.curl_args))
         next(windows(manifest.schedule, time.time()))
         traces = []
-        for instance in manifest.instances:
-            for stack in self._stacks:
-                endpoint = manifest.endpoint(self._config.server_host, instance, stack.transport)
+        for stack in self._stacks:
+            for endpoint in dict.fromkeys(
+                manifest.endpoint(self._config.server_host, instance, stack.transport) for instance in manifest.instances
+            ):
                 lines = self._curl.trace(endpoint.url(MANIFEST_PATH), stack.curl_args + endpoint.pin())
-                traces.append({"cc": instance.label, "port": endpoint.port, "stack": stack.name, "trace": lines})
+                traces.append({"stack": stack.name, "port": endpoint.port, "trace": lines})
         dish_status = self._probe_dish() if self._with_dish else None
         seed = self._config.seed if self._config.seed is not None else random.SystemRandom().randrange(2**32)
         out_dir = self._config.results_dir / time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -190,7 +197,8 @@ class Campaign:
                     time.sleep(self._config.gap_s)
                     round_no = (window_no - 1) // algorithms + 1
                     endpoint = manifest.endpoint(self._config.server_host, instance, protocol.transport)
-                    trial = Trial(round_no, window_no, window, slot, protocol, instance, endpoint, payload)
+                    server = manifest.server(instance, protocol.transport)
+                    trial = Trial(round_no, window_no, window, slot, protocol, instance, server, endpoint, payload)
                     if window.may_start(time.time(), self._config.connect_timeout_s):
                         row = self._measure(sampler, trial)
                     else:

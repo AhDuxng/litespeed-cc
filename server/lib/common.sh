@@ -3,9 +3,9 @@
 # Code (server/, replaced on every deploy) is kept apart from generated state
 # (www/, tls/, state/, logs/ beside it), so redeploying code never touches the
 # payloads, the certificate, the rendered OpenLiteSpeed configurations or the
-# collected logs. Instance and schedule specifications are parsed in one place so
-# that the OpenLiteSpeed configurations, the systemd units and the manifest cannot
-# disagree on which port carries which congestion control algorithm.
+# collected logs. Instance, TCP listener and schedule specifications are parsed in
+# one place so that the OpenLiteSpeed configurations, the systemd units and the
+# manifest cannot disagree on which port carries which congestion control algorithm.
 
 CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT_DIR="$(dirname "$CODE_DIR")"
@@ -35,17 +35,24 @@ instance_labels() {
 }
 
 instance_field() {
-    local label="$1" field="$2" spec name quic_cc tcp_port udp_port
+    local label="$1" field="$2" spec name quic_cc udp_port
     for spec in "${INSTANCES[@]}"; do
-        IFS=: read -r name quic_cc tcp_port udp_port <<<"$spec"
+        IFS=: read -r name quic_cc udp_port <<<"$spec"
         [[ $name == "$label" ]] || continue
         case $field in
             quic_cc) printf '%s\n' "$quic_cc" ;;
-            tcp_port) printf '%s\n' "$tcp_port" ;;
             udp_port) printf '%s\n' "$udp_port" ;;
             *) return 1 ;;
         esac
         return 0
     done
     return 1
+}
+
+tcp_instance() {
+    printf '%s\n' "${TCP_LISTENER%%:*}"
+}
+
+tcp_port() {
+    printf '%s\n' "${TCP_LISTENER##*:}"
 }

@@ -1,10 +1,14 @@
 """Server manifest: the experiment's ground truth, published by the server.
 
 The server derives www/manifest.json from its own configuration: its certificate
-name, the tcp port (HTTP/2) and udp port (HTTP/3) of each congestion control
-instance (QUIC algorithm fixed per instance), the time grid on which the kernel TCP algorithm alternates together with
-the client window delay, the payload sizes with SHA-256, and the provenance of
-the sender. The client takes name, ports, schedule and expected sizes from it
+name, the udp port (HTTP/3) of each congestion control instance (QUIC algorithm
+fixed per instance), the single tcp listener (HTTP/2) and the instance hosting
+it, the time grid on which the kernel TCP algorithm alternates together with the
+client window delay, the payload sizes with SHA-256, and the provenance of the
+sender. A QUIC transfer runs the algorithm of the instance it is sent to; a TCP
+transfer runs the kernel algorithm in force when it is accepted, so every TCP
+transfer goes to the one tcp listener and its algorithm is that of its window.
+The client takes name, ports, schedule and expected sizes from the manifest
 instead of keeping a copy, so a transfer can never be attributed to the wrong
 algorithm or validated against a wrong size, and the server-side provenance is
 archived with every dataset.
@@ -30,11 +34,13 @@ MANIFEST_PATH = "manifest.json"
 class Instance:
     label: str
     quic_cc: int
-    tcp_port: int
     udp_port: int
 
-    def port(self, transport: str) -> int:
-        return self.udp_port if transport == "quic" else self.tcp_port
+
+@dataclass(frozen=True)
+class TcpListener:
+    instance: str
+    port: int
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,7 @@ class Manifest:
     document: Mapping[str, Any]
     tls_name: str
     instances: tuple[Instance, ...]
+    tcp: TcpListener
     schedule: TcpSchedule
     payloads: tuple[Payload, ...]
 
@@ -85,9 +92,8 @@ class Manifest:
         manifest = cls(
             document=document,
             tls_name=document["server"]["tls_name"],
-            instances=tuple(
-                Instance(i["label"], int(i["quic_cc"]), int(i["tcp_port"]), int(i["udp_port"])) for i in document["instances"]
-            ),
+            instances=tuple(Instance(i["label"], int(i["quic_cc"]), int(i["udp_port"])) for i in document["instances"]),
+            tcp=TcpListener(document["tcp"]["instance"], int(document["tcp"]["port"])),
             schedule=TcpSchedule(
                 period_s=int(grid["period_s"]),
                 switches=tuple(
@@ -97,13 +103,20 @@ class Manifest:
             ),
             payloads=tuple(Payload(p["name"], int(p["bytes"]), p["sha256"]) for p in document["payloads"]),
         )
-        unmatched = {s.algorithm for s in manifest.schedule.switches} - {i.label for i in manifest.instances}
+        labels = {i.label for i in manifest.instances}
+        unmatched = {s.algorithm for s in manifest.schedule.switches} - labels
         if unmatched:
             raise ValueError(f"manifest schedules algorithms without an instance: {sorted(unmatched)}")
+        if manifest.tcp.instance not in labels:
+            raise ValueError(f"manifest tcp listener names no instance: {manifest.tcp.instance}")
         return manifest
 
     def instance(self, label: str) -> Instance:
         return next(instance for instance in self.instances if instance.label == label)
 
+    def server(self, instance: Instance, transport: str) -> str:
+        return instance.label if transport == "quic" else self.tcp.instance
+
     def endpoint(self, address: str, instance: Instance, transport: str) -> Endpoint:
-        return Endpoint(self.tls_name, address, instance.port(transport))
+        port = instance.udp_port if transport == "quic" else self.tcp.port
+        return Endpoint(self.tls_name, address, port)

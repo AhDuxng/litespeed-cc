@@ -2,10 +2,10 @@
 """Generation of www/manifest.json, the experiment's ground truth read by the client.
 
 The manifest binds every identifier the client relies on to the server's actual
-configuration: the certificate name every client must send as SNI, the tcp port
-(HTTP/2) and udp port (HTTP/3) of each congestion control instance, the time grid
-of the kernel TCP algorithm with the client window delay, and the size and
-SHA-256 digest of every payload. It also carries the provenance of the sender:
+configuration: the certificate name every client must send as SNI, the udp port
+(HTTP/3) of each congestion control instance, the single tcp listener (HTTP/2)
+and the instance that hosts it, the time grid of the kernel TCP algorithm with
+the client window delay, and the size and SHA-256 digest of every payload. It also carries the provenance of the sender:
 the OpenLiteSpeed image digest and version banner (which names the lsquic
 release), the kernel release and the sysctls that shape TCP and UDP sending
 (qdisc, socket buffer limits, ECN, per-destination metrics caching). The client
@@ -51,8 +51,13 @@ def sha256(path: Path) -> str:
 
 
 def instance(spec: str) -> dict[str, Any]:
-    label, quic_cc, tcp_port, udp_port = spec.split(":")
-    return {"label": label, "quic_cc": int(quic_cc), "tcp_port": int(tcp_port), "udp_port": int(udp_port)}
+    label, quic_cc, udp_port = spec.split(":")
+    return {"label": label, "quic_cc": int(quic_cc), "udp_port": int(udp_port)}
+
+
+def tcp_listener(spec: str) -> dict[str, Any]:
+    label, port = spec.split(":")
+    return {"instance": label, "port": int(port)}
 
 
 def switch(spec: str) -> dict[str, Any]:
@@ -72,7 +77,8 @@ def main() -> int:
     parser.add_argument("--image", required=True)
     parser.add_argument("--image-digest", default="")
     parser.add_argument("--server-version", default="")
-    parser.add_argument("--instance", action="append", required=True, metavar="LABEL:QUIC_CC:TCP_PORT:UDP_PORT")
+    parser.add_argument("--instance", action="append", required=True, metavar="LABEL:QUIC_CC:UDP_PORT")
+    parser.add_argument("--tcp", required=True, metavar="LABEL:PORT")
     parser.add_argument("--period", type=int, required=True)
     parser.add_argument("--switch", action="append", required=True, metavar="OFFSET_S:ALGORITHM")
     parser.add_argument("--window-delay", type=int, required=True)
@@ -90,6 +96,7 @@ def main() -> int:
             "sysctl": {name: sysctl(name) for name in SYSCTLS},
         },
         "instances": [instance(spec) for spec in args.instance],
+        "tcp": tcp_listener(args.tcp),
         "tcp_cc_schedule": {
             "period_s": args.period,
             "switches": [switch(spec) for spec in args.switch],

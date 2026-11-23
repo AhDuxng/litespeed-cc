@@ -9,7 +9,7 @@ tắc nghẽn (CCA) phía máy chủ × 2 kích thước tệp, tổng cộng 12
 | Giao thức | HTTP/2 trên TCP+TLS 1.2 · HTTP/2 trên TCP+TLS 1.3 · HTTP/3 trên QUIC (`--http3-only`) |
 | Kích thước tệp | 2 MiB (`2MB.bin`) · 50 MiB (`50MB.bin`) |
 | CCA phía máy chủ | CUBIC · BBRv1 |
-| Cổng | CUBIC: TCP `443` (HTTP/2) + UDP `4461` (HTTP/3) · BBRv1: TCP `80` (HTTP/2, vẫn là TLS) + UDP `4462` (HTTP/3) |
+| Cổng | HTTP/2: TCP `443`, dùng chung cho cả hai CCA · HTTP/3: UDP `4461` (CUBIC), UDP `4462` (BBRv1) |
 | CCA cho QUIC | mỗi cổng UDP cố định một CCA: `4461` = CUBIC, `4462` = BBRv1 |
 | CCA cho TCP | `net.ipv4.tcp_congestion_control` toàn hệ thống: phút x4 → BBRv1, phút x9 → CUBIC |
 | Lịch máy khách | phút x0, x10, … gửi yêu cầu với CUBIC · phút x5, x15, … gửi yêu cầu với BBRv1 |
@@ -19,8 +19,8 @@ tắc nghẽn (CCA) phía máy chủ × 2 kích thước tệp, tổng cộng 12
 ```
  Raspberry Pi 4 (trungnt@100.72.249.11)            AWS 47.129.174.173  (/data/starlink-cc)
  ┌───────────────────────────────┐  Starlink  ┌──────────────────────────────────────────┐
- │ curl (ngtcp2/nghttp2)         │ ─────────► │ ols-cubic  tcp/443 + udp/4461  CUBIC      │
- │   h2-tls12  h2-tls13  h3      │            │ ols-bbr    tcp/80  + udp/4462  BBRv1      │
+ │ curl (ngtcp2/nghttp2)         │ ─────────► │ ols-cubic  udp/4461 CUBIC + tcp/443 (h2)  │
+ │   h2-tls12  h2-tls13  h3      │            │ ols-bbr    udp/4462 BBRv1                 │
  │ bench: runs / cpu / dish      │            │ tcp-cc.timer  x4 → bbr, x9 → cubic (TCP)  │
  │ gRPC 192.168.100.1:9200 1 Hz  │            │ ols-cpu    logs/cpu.csv (cgroup, softirq) │
  └───────────────────────────────┘            │ www/ 2MB.bin 50MB.bin manifest.json       │
@@ -39,14 +39,20 @@ tắc nghẽn (CCA) phía máy chủ × 2 kích thước tệp, tổng cộng 12
   này dùng để kiểm chứng CCA của từng lượt tải TCP.
 - Container chạy với `--network host`. Socket TCP vì vậy nằm trong network namespace của host,
   nơi timer đổi CCA, và trên đường dữ liệu không có NAT hay docker-proxy.
-- Mỗi instance có 2 listener cùng cấu hình TLS: listener TCP cho HTTP/2 và listener UDP cho
-  HTTP/3. Hai cổng không cần trùng nhau, vì CCA của TCP do kernel quyết định chứ không phải
-  instance. Trong một cửa sổ, cả TCP lẫn QUIC đều gửi tới instance của CCA đang chạy (CUBIC:
-  `443`/`4461`, BBRv1: `80`/`4462`).
-- **Vì sao dùng 80/443**: Security Group của AWS chỉ cho TCP vào cổng 22, 80, 443, còn UDP thì
-  mở 4461/4462. Để dùng 80/443, phải tạm dừng container `openlitespeed_server` của dự án
-  videostreaming (restart policy `unless-stopped`, nên nó đứng yên kể cả khi reboot). Khôi phục:
-  dừng OLS của thí nghiệm (`sudo systemctl disable --now ols@cubic ols@bbr ols-cpu`), sau đó
+- **Chỉ một cổng TCP**: CCA của TCP do kernel gán cho socket lúc chấp nhận kết nối, không phụ
+  thuộc instance hay cổng. Vì vậy HTTP/2 của cả hai CCA đi qua một listener duy nhất, `tcp/443`
+  trên `ols-cubic`; cổng thứ hai sẽ luôn mang cùng CCA nên không phân biệt được gì. Trong cửa sổ
+  BBRv1, lượt HTTP/3 gửi tới `ols-bbr` (`udp/4462`), còn lượt HTTP/2 vẫn tới `tcp/443` nhưng
+  chạy BBRv1 vì timer đã đổi CCA của kernel.
+- Mỗi lượt ghi cột `server` trong `runs.csv`: container đã phục vụ lượt đó (HTTP/2 luôn là
+  `cubic`). CPU server của một lượt được lấy từ đúng container này.
+- OpenLiteSpeed tự mở thêm socket TCP cùng số với listener QUIC (`tcp/4461`, `tcp/4462`). Không
+  client nào dùng, và Security Group cũng chặn.
+- **Vì sao dùng 443**: Security Group của AWS chỉ cho TCP vào cổng 22, 80, 443, còn UDP thì mở
+  4461/4462. Để dùng 443, phải tạm dừng container `openlitespeed_server` của dự án
+  videostreaming (container này chiếm cả 80 lẫn 443; restart policy `unless-stopped`, nên nó đứng
+  yên kể cả khi reboot). Khôi phục: dừng OLS của thí nghiệm
+  (`sudo systemctl disable --now ols@cubic ols@bbr ols-cpu`), sau đó
   `docker start openlitespeed_server`.
 - **SNI bắt buộc**: lsquic tìm certificate cho QUIC theo SNI. Nếu client không gửi SNI, lsquic
   hủy bắt tay với `internal_error` (TLS alert 80); listener TCP thì tự dùng certificate mặc định.
@@ -80,7 +86,7 @@ tắc nghẽn (CCA) phía máy chủ × 2 kích thước tệp, tổng cộng 12
 |---|---|---|
 | Handshake, TTFB, thời gian tải, throughput | `curl --write-out '%{json}'`: `time_appconnect` (→ `handshake_s`), `time_starttransfer` (→ `ttfb_s`), `time_total` (→ `download_time_s`), `speed_download` (→ `throughput_mbps`), kèm `time_connect`, `http_version`, `size_download` | `runs.csv` |
 | CPU client | CPU time của process curl lấy từ `wait4()` rusage (`cpu_pct`, 100 = 1 core). Chuỗi 1 Hz: CPU toàn máy, CPU của curl, nhiệt độ SoC. Cờ `vcgencmd get_throttled` trước và sau mỗi lượt | `runs.csv`, `cpu.csv` |
-| CPU server | `cpu.stat:usage_usec` của cgroup từng container, 1 Hz (100 = 1 vCPU), kèm `host_pct`, `softirq_pct`, `steal_pct` của host. Phần TCP chạy trong kernel (softirq) không được tính vào cgroup, nên phải xem thêm các cột của host | server `logs/cpu.csv` |
+| CPU server | `cpu.stat:usage_usec` của cgroup từng container, 1 Hz (100 = 1 vCPU), kèm `host_pct`, `softirq_pct`, `steal_pct` của host. Mỗi lượt lấy CPU của container trong cột `server` (HTTP/2 luôn là `ols-cubic`). Phần TCP chạy trong kernel (softirq) không được tính vào cgroup, nên phải xem thêm các cột của host | server `logs/cpu.csv` |
 | CCA của TCP | log mỗi lần đổi: `ts, phase_s, scheduled, previous, effective` | server `logs/tcp_cc.csv` |
 | Trạng thái dish | gRPC `get_status` 1 Hz: latency/drop tới PoP, throughput, obstruction, SNR, alert | `dish.csv`, `dish.jsonl` |
 
@@ -93,7 +99,8 @@ tắc nghẽn (CCA) phía máy chủ × 2 kích thước tệp, tổng cộng 12
 | `Makefile` | máy trạm | deploy, setup, lấy kết quả về |
 
 Máy khách không giữ bản sao của bảng cổng → CCA hay lịch đổi CCA. Nó đọc `manifest.json` do
-server sinh từ `server.conf`. Manifest gồm: cổng, lịch, kích thước và SHA-256 của payload, digest
+server sinh từ `server.conf`. Manifest gồm: cổng UDP của từng instance, listener TCP duy nhất
+(`tcp: {instance, port}`), lịch, kích thước và SHA-256 của payload, digest
 và phiên bản image, kernel, các sysctl của TCP/UDP.
 
 ## Chạy
@@ -116,7 +123,7 @@ Vận hành server: `systemctl status 'ols@*' ols-cpu tcp-cc.timer`, `systemctl 
 `tail logs/tcp_cc.csv`, `docker logs ols-cubic`.
 
 Trong lúc đo, kiểm tra một lượt TCP đang dùng CCA nào bằng
-`ss -tin '( sport = :443 or sport = :80 )'` (trong kết quả có chữ `cubic` hoặc `bbr`).
+`ss -tin 'sport = :443'` (trong kết quả có chữ `cubic` hoặc `bbr`).
 
 Sau khi đo xong, trả CCA của TCP về mặc định:
 `sudo systemctl disable --now tcp-cc.timer && sudo sysctl -w net.ipv4.tcp_congestion_control=cubic`.
