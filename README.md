@@ -11,7 +11,7 @@ tắc nghẽn (CCA) phía máy chủ × 2 kích thước tệp, tổng cộng 12
 | CCA phía máy chủ | CUBIC · BBRv1 |
 | Cổng | HTTP/2: TCP `443`, dùng chung cho cả hai CCA · HTTP/3: UDP `4461` (CUBIC), UDP `4462` (BBRv1) |
 | CCA cho QUIC | mỗi cổng UDP cố định một CCA: `4461` = CUBIC, `4462` = BBRv1 |
-| CCA cho TCP | `net.ipv4.tcp_congestion_control` toàn hệ thống: phút x4 → BBRv1, phút x9 → CUBIC |
+| CCA cho TCP | `net.ipv4.tcp_congestion_control` toàn hệ thống: x4:30 → BBRv1, x9:30 → CUBIC |
 | Lịch máy khách | phút x0, x10, … gửi yêu cầu với CUBIC · phút x5, x15, … gửi yêu cầu với BBRv1 |
 | Chỉ số | handshake time, TTFB, download time, throughput (`curl --write-out`); CPU đo riêng |
 | Starlink | gRPC mỗi giây, ghép với từng lượt tải theo dấu thời gian |
@@ -21,7 +21,7 @@ tắc nghẽn (CCA) phía máy chủ × 2 kích thước tệp, tổng cộng 12
  ┌───────────────────────────────┐  Starlink  ┌──────────────────────────────────────────┐
  │ curl (ngtcp2/nghttp2)         │ ─────────► │ ols-cubic  udp/4461 CUBIC + tcp/443 (h2)  │
  │   h2-tls12  h2-tls13  h3      │            │ ols-bbr    udp/4462 BBRv1                 │
- │ bench: runs / cpu / dish      │            │ tcp-cc.timer  x4 → bbr, x9 → cubic (TCP)  │
+ │ bench: runs / cpu / dish      │            │ tcp-cc.timer x4:30 bbr, x9:30 cubic (TCP) │
  │ gRPC 192.168.100.1:9200 1 Hz  │            │ ols-cpu    logs/cpu.csv (cgroup, softirq) │
  └───────────────────────────────┘            │ www/ 2MB.bin 50MB.bin manifest.json       │
                                               └──────────────────────────────────────────┘
@@ -35,7 +35,7 @@ tắc nghẽn (CCA) phía máy chủ × 2 kích thước tệp, tổng cộng 12
   lsquic 4.4.1). Máy khách chọn CCA qua cổng đích.
 - **TCP**: CCA là tham số của nhân Linux. Kernel gán CCA cho socket khi server chấp nhận kết nối,
   nên thay đổi chỉ áp dụng cho kết nối mới và mỗi lượt tải dùng CCA có hiệu lực lúc bắt tay.
-  `tcp-cc.timer` đổi CCA đúng phút x4 và x9. Mỗi lần đổi được ghi vào `logs/tcp_cc.csv`, và log
+  `tcp-cc.timer` đổi CCA đúng x4:30 và x9:30. Mỗi lần đổi được ghi vào `logs/tcp_cc.csv`, và log
   này dùng để kiểm chứng CCA của từng lượt tải TCP.
 - Container chạy với `--network host`. Socket TCP vì vậy nằm trong network namespace của host,
   nơi timer đổi CCA, và trên đường dữ liệu không có NAT hay docker-proxy.
@@ -61,8 +61,8 @@ tắc nghẽn (CCA) phía máy chủ × 2 kích thước tệp, tổng cộng 12
 
 ## Thiết kế thí nghiệm
 
-- **Cửa sổ theo CCA**: mỗi cửa sổ mở 60 s sau lần đổi CCA và đóng ngay trước lần đổi kế tiếp
-  (CUBIC: x0–x4, BBRv1: x5–x9). Khoảng 60 s này hấp thụ độ lệch đồng hồ NTP giữa hai máy và cho
+- **Cửa sổ theo CCA**: mỗi cửa sổ mở 30 s sau lần đổi CCA và đóng ngay trước lần đổi kế tiếp
+  (CUBIC: x0:00–x4:30, BBRv1: x5:00–x9:30, mỗi cửa sổ 4 phút 30 giây). Khoảng 30 s này hấp thụ độ lệch đồng hồ NTP giữa hai máy và cho
   hàng đợi kịp xả hết.
 - **Batch**: trong mỗi cửa sổ, máy khách chạy mỗi tổ hợp ngăn xếp × kích thước đúng một lần
   (6 lượt), theo thứ tự ngẫu nhiên (seed được ghi lại). Một round gồm một cửa sổ CUBIC và một cửa

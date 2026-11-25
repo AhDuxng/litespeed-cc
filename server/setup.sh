@@ -41,9 +41,9 @@ on_calendar() {
         die "TCP_CC_PERIOD_S must be a whole number of minutes that divides one hour"
     for spec in "${TCP_CC_SWITCHES[@]}"; do
         IFS=: read -r offset algorithm <<<"$spec"
-        ((offset % 60 == 0 && offset < TCP_CC_PERIOD_S)) || die "switch '$spec' must sit on a whole minute inside the period"
+        ((offset < TCP_CC_PERIOD_S)) || die "switch '$spec' must lie inside the period"
         instance_field "$algorithm" quic_cc >/dev/null || die "switch '$spec' names no instance"
-        lines+=("$(printf 'OnCalendar=*-*-* *:%02d/%d:00' $((offset / 60)) $((TCP_CC_PERIOD_S / 60)))")
+        lines+=("$(printf 'OnCalendar=*-*-* *:%02d/%d:%02d' $((offset / 60)) $((TCP_CC_PERIOD_S / 60)) $((offset % 60)))")
     done
     joined="$(printf '%s\\n' "${lines[@]}")"
     printf '%s' "${joined%\\n}"
